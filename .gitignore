@@ -1,0 +1,9 @@
+.env
+.tio.tokens.json
+__pycache__/
+*.pyc
+.venv/
+dist/
+*.db-wal
+*.db-shm
+*.egg-info/
