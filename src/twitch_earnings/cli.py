@@ -322,7 +322,7 @@ def _fetch_top_streams(settings: Settings, count: int) -> list[dict]:
 
 @app.command()
 def monitor(
-    count: int = typer.Option(20, "--count", "-n", help="Number of top streams to monitor"),
+    count: int = typer.Option(500, "--count", "-n", help="Number of top streams to monitor"),
 ) -> None:
     """Monitor top live streams and track subs in real-time. j/k to scroll, Enter for chat, Esc to go back."""
     import sys
@@ -508,14 +508,15 @@ def monitor(
             ch += sys.stdin.read(1)
         return ch
 
-    async def irc_listener() -> None:
+    async def irc_connection(batch: list[str]) -> None:
+        """One IRC WebSocket connection handling up to 100 channels."""
         import websockets
 
         uri = "wss://irc-ws.chat.twitch.tv:443"
         async with websockets.connect(uri) as ws:
             await ws.send("CAP REQ :twitch.tv/tags twitch.tv/commands")
             await ws.send("NICK justinfan42069")
-            for ch in channels:
+            for ch in batch:
                 await ws.send(f"JOIN #{ch}")
 
             while True:
@@ -536,10 +537,16 @@ def monitor(
                             continue
 
                         ch_name = None
-                        if "PRIVMSG #" in line or "USERNOTICE #" in line:
+                        if " PRIVMSG #" in line:
                             try:
-                                idx = line.index("#")
-                                ch_name = line[idx + 1:].split(" ", 1)[0].split(":")[0].lower()
+                                idx = line.index(" PRIVMSG #") + len(" PRIVMSG #")
+                                ch_name = line[idx:].split(" ", 1)[0].split(":")[0].lower()
+                            except (ValueError, IndexError):
+                                pass
+                        elif " USERNOTICE #" in line:
+                            try:
+                                idx = line.index(" USERNOTICE #") + len(" USERNOTICE #")
+                                ch_name = line[idx:].split(" ", 1)[0].split(":")[0].lower()
                             except (ValueError, IndexError):
                                 pass
 
@@ -606,7 +613,9 @@ def monitor(
         old_settings = termios.tcgetattr(fd)
         tty.setcbreak(fd)
 
-        listener_task = asyncio.create_task(irc_listener())
+        # Split channels into batches of 100 (IRC join limit per connection)
+        batches = [channels[i:i+100] for i in range(0, len(channels), 100)]
+        listener_tasks = [asyncio.create_task(irc_connection(b)) for b in batches]
         saver_task = asyncio.create_task(db_saver())
 
         FPS = 240
@@ -641,7 +650,8 @@ def monitor(
             finally:
                 termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
                 saver_task.cancel()
-                listener_task.cancel()
+                for t in listener_tasks:
+                    t.cancel()
                 flush_to_db()
 
     try:
